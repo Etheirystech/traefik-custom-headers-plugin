@@ -8,50 +8,43 @@ import (
 	"net/http"
 )
 
-// Rename holds one rename configuration.
-type renameData struct {
-	ExistingHeaderName string `json:"existingHeaderName"`
-	NewHeaderName      string `json:"newHeaderName"`
-}
-
 // Config holds the plugin configuration.
-type Config struct {
-	RenameData []renameData `json:"renameData"`
-}
+type Config struct{}
 
 // CreateConfig creates and initializes the plugin configuration.
 func CreateConfig() *Config {
 	return &Config{}
 }
 
-// New creates and returns a new rewrite body plugin instance.
+// renameHeaders is the main plugin struct.
 type renameHeaders struct {
-	name    string
-	next    http.Handler
-	renames []renameData
+	name string
+	next http.Handler
 }
 
 // New creates a new Custom Header plugin.
 func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	return &renameHeaders{
-		name:    name,
-		next:    next,
-		renames: config.RenameData,
+		name: name,
+		next: next,
 	}, nil
 }
 
 func (r *renameHeaders) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	wrappedWriter := &responseWriter{
-		writer:          rw,
-		headersToRename: r.renames,
+	// Get the value of CF-Connecting-IP
+	cfConnectingIP := req.Header.Get("CF-Connecting-IP")
+
+	// If CF-Connecting-IP exists, set it as the value of X-Forwarded-For
+	if cfConnectingIP != "" {
+		req.Header.Set("X-Forwarded-For", cfConnectingIP)
 	}
 
-	r.next.ServeHTTP(wrappedWriter, req)
+	// Pass the request to the next handler
+	r.next.ServeHTTP(rw, req)
 }
 
 type responseWriter struct {
-	writer          http.ResponseWriter
-	headersToRename []renameData
+	writer http.ResponseWriter
 }
 
 func (r *responseWriter) Header() http.Header {
@@ -63,17 +56,6 @@ func (r *responseWriter) Write(bytes []byte) (int, error) {
 }
 
 func (r *responseWriter) WriteHeader(statusCode int) {
-	for _, headerToRename := range r.headersToRename {
-		headerValues := r.writer.Header().Values(headerToRename.ExistingHeaderName)
-
-		if len(headerValues) == 0 {
-			continue
-		}
-
-		r.writer.Header().Del(headerToRename.ExistingHeaderName)
-		r.writer.Header()[headerToRename.NewHeaderName] = headerValues
-	}
-
 	r.writer.WriteHeader(statusCode)
 }
 

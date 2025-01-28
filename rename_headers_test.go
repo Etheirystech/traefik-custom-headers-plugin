@@ -10,41 +10,48 @@ import (
 func TestServeHTTP(t *testing.T) {
 	tests := []struct {
 		desc          string
-		renames       []renameData
 		reqHeader     http.Header
-		expRespHeader http.Header
+		expReqHeader  http.Header
 	}{
 		{
-			desc: "Should rename headers while keeping their values",
-			renames: []renameData{
-				{
-					ExistingHeaderName: "Foo",
-					NewHeaderName:      "bar",
-				},
-				{
-					ExistingHeaderName: "Another-Foo",
-					NewHeaderName:      "another-bar",
-				},
-			},
+			desc: "Should copy CF-Connecting-IP to X-Forwarded-For",
 			reqHeader: map[string][]string{
-				"Foo":         {"fooval", "fooval2"},
-				"Another-Foo": {"another-fooval", "another-fooval2"},
+				"CF-Connecting-IP": {"203.0.113.42"},
 			},
-			expRespHeader: map[string][]string{
-				"bar":         {"fooval", "fooval2"},
-				"another-bar": {"another-fooval", "another-fooval2"},
+			expReqHeader: map[string][]string{
+				"X-Forwarded-For": {"203.0.113.42"},
+			},
+		},
+		{
+			desc: "Should not modify X-Forwarded-For if CF-Connecting-IP is missing",
+			reqHeader: map[string][]string{
+				"X-Forwarded-For": {"198.51.100.24"},
+			},
+			expReqHeader: map[string][]string{
+				"X-Forwarded-For": {"198.51.100.24"},
+			},
+		},
+		{
+			desc: "Should overwrite X-Forwarded-For with CF-Connecting-IP if both exist",
+			reqHeader: map[string][]string{
+				"CF-Connecting-IP": {"203.0.113.42"},
+				"X-Forwarded-For":  {"198.51.100.24"},
+			},
+			expReqHeader: map[string][]string{
+				"X-Forwarded-For": {"203.0.113.42"},
 			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			config := &Config{
-				RenameData: test.renames,
-			}
+			// Create the plugin configuration
+			config := &Config{}
 
+			// Create the next handler
 			next := func(rw http.ResponseWriter, req *http.Request) {
-				for k, v := range test.reqHeader {
+				// Pass the request to the next handler without modifying it
+				for k, v := range req.Header {
 					for _, h := range v {
 						rw.Header().Add(k, h)
 					}
@@ -52,26 +59,39 @@ func TestServeHTTP(t *testing.T) {
 				rw.WriteHeader(http.StatusOK)
 			}
 
-			rewriteBody, err := New(context.Background(), http.HandlerFunc(next), config, "rewriteHeader")
+			// Create the plugin instance
+			plugin, err := New(context.Background(), http.HandlerFunc(next), config, "customHeader")
 			if err != nil {
 				t.Fatal(err)
 			}
 
+			// Create a test request
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 
-			rewriteBody.ServeHTTP(recorder, req)
-			for k, expected := range test.expRespHeader {
-				values := recorder.Result().Header[k]
+			// Add the test headers to the request
+			for k, v := range test.reqHeader {
+				for _, h := range v {
+					req.Header.Add(k, h)
+				}
+			}
+
+			// Pass the request through the plugin
+			plugin.ServeHTTP(recorder, req)
+
+			// Check the resulting request headers
+			for k, expected := range test.expReqHeader {
+				values := req.Header.Values(k)
 
 				if !testEq(values, expected) {
-					t.Errorf("Slice arent equals: expect: %+v, result: %+v", expected, values)
+					t.Errorf("Header mismatch for %q: expected %+v, got %+v", k, expected, values)
 				}
 			}
 		})
 	}
 }
 
+// Helper function to compare two slices
 func testEq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
