@@ -1,3 +1,3 @@
-module github.com/AdamEszes/traefik-custom-headers-plugin
+module github.com/Etheirystech/traefik-custom-headers-plugin
 
 go 1.16
